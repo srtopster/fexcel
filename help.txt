@@ -1,0 +1,22 @@
+Fexcel (Fuck Excel)
+
+Eu odeio o excel !
+
+* Arquivo de configuração
+".fexcel.conf" é o arquivo de configuração e fica na mesma pasta do executavel.
+
+* Exemplo do arquivo de configuração:
+==================================================================================
+HISTORY_FILE=history.log //Arquivo de log onde os dados ficam salvos
+OBJECTIVES=Car:10000,Phone:500 //(Opicional) Objetivos que deseja conquistar
+TRIM=50 //(Opicional) Controla a quantidade de registros que vai aparecer
+SEP_SIZE=75 //(Opicional) Controla o tamanho do separador "="
+==================================================================================
+
+* Argumentos
+==================================================================================
+'--ss <DD/MM/YYYY>' Início do filtro de data 
+'--to <DD/MM/YYYY>' Fim do filtro de data 
+'--t <N>' Filtra os últimos N dias
+'--help' Mostra essa mensagem
+==================================================================================
