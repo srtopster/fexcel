@@ -1,20 +1,61 @@
-use std::fs::{read,OpenOptions};
+use std::fs::{OpenOptions,File};
 use std::io::prelude::*;
-use std::io::ErrorKind;
+use std::io::BufReader;
 use std::str::FromStr;
-use std::string::ParseError;
 use std::path::PathBuf;
 use std::env;
+use std::collections::VecDeque;
 use colored::*;
 use inquire::{CustomType,Text,Select};
 use chrono::{Utc,FixedOffset,NaiveDateTime};
+use anyhow::{Result,anyhow,Context};
+use ini::Ini;
 
-#[derive(Default,Debug)]
+const CONFIG_FILE_NAME: &str = ".fexcel.ini";
+
+#[derive(Debug)]
 struct Config {
     history_file_path: PathBuf,
     objectives: Option<Vec<(String,f64)>>,
-    trim_size: Option<usize>,
-    sep_size: Option<usize>
+    trim_size: usize,
+    separator: String,
+    separator_size: usize,
+    value_padding: usize,
+    rendered_separator: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { 
+            history_file_path: "history.log".into(),
+            objectives: None,
+            trim_size: 50,
+            separator: "━".to_string(),
+            separator_size: 50,
+            value_padding: 9,
+            rendered_separator: '='.to_string().repeat(50)
+        }
+    }
+}
+
+struct Args {
+    filter: Option<FilterBounds>,
+    help: bool
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            filter: None,
+            help: false
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FilterBounds {
+    lower: i64,
+    upper: i64
 }
 
 struct Registry {
@@ -23,90 +64,189 @@ struct Registry {
     desc: String
 }
 
-fn get_current_date() -> String {
-    Utc::now().with_timezone(&FixedOffset::west_opt(10800).unwrap()).format("%d/%m/%Y").to_string()
-}
-
-fn date_str_to_timestamp(date:&str) -> i64 {
-    NaiveDateTime::parse_from_str(&format!("{} 00:00:00",date), "%d/%m/%Y %H:%M:%S").expect("Falha ao processar data !").timestamp()
-}
-
 impl FromStr for Registry {
-    type Err = ParseError;
+    type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (date,values) = s.split_once(":").unwrap();
-        let (money,desc) = values.split_once(":").unwrap();
+        let (date,values): (&str,&str) = s.split_once(":").ok_or_else(||anyhow!("Falha ao split ':'"))?;
+        let (money,desc): (&str,&str) = values.split_once(":").ok_or_else(||anyhow!("Falha ao split ':'"))?;
         
         Ok(
-            Registry {
-                date: date.parse().unwrap(),
-                money: money.parse().unwrap(),
-                desc: desc.parse().unwrap()
+            Self {
+                date: date.parse()?,
+                money: money.parse()?,
+                desc: desc.parse()?
             }
         )
     }
 }
 
-fn add_registry(config: Config) {
+fn get_current_date() -> String {
+    Utc::now().with_timezone(&FixedOffset::west_opt(10800).unwrap()).format("%d/%m/%Y").to_string()
+}
+
+fn date_str_to_timestamp(date:&str) -> Result<i64> {
+    Ok(NaiveDateTime::parse_from_str(&format!("{} 00:00:00",date), "%d/%m/%Y %H:%M:%S").with_context(||anyhow!("Erro ao processar data: {}",date))?.timestamp())
+}
+
+fn config_parser(config_file_path: PathBuf) -> Result<Config> {
+    //If configo file doesn't exist, write one
+    if !config_file_path.try_exists()? {
+        println!("Sem arquivo de configuração !\nGerando arquivo padrão: .fexcel.conf");
+        let mut file = File::create(&config_file_path)?; 
+        file.write_all(include_bytes!("..\\fexcel_default.ini"))?;
+    }
+
+    let mut parsed_config = Config::default();
+    let config_file = Ini::load_from_file(&config_file_path)?;
+
+    //pega o caminho do arquivo de history
+    parsed_config.history_file_path = config_file.section(None::<String>)
+        .ok_or_else(||anyhow!("Falha ao pegar history_file na configuração ! Use: --help !"))?
+        .get("history_file")
+        .ok_or_else(||anyhow!("Falha ao pegar history_file na configuração ! Use: --help !"))?
+        .parse()?;
+
+    if let Some(objectives_sec) = config_file.section(Some("objectives")) {
+        parsed_config.objectives = Some(objectives_sec.iter()
+            .map(|(k,v)| -> Result<(String,f64)>{
+                Ok((
+                    k.to_owned(),
+                    v.parse::<f64>()
+                        .with_context(|| format!("Erro ao fazer parse do valor '{}' para '{}' ! Use: --help", v, k))?
+                ))
+            })
+            .collect::<Result<Vec<(String,f64)>>>()? //Rust magia negra, tranforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
+        );
+    }
+    if let Some(style) = config_file.section(Some("style")) {
+        parsed_config.trim_size = style.get("trim_size").map(str::parse).transpose()?.unwrap_or(parsed_config.trim_size);
+        parsed_config.separator = style.get("separator").map(str::parse).transpose()?.unwrap_or(parsed_config.separator);
+        parsed_config.separator_size = style.get("separator_size").map(str::parse).transpose()?.unwrap_or(parsed_config.separator_size);
+        parsed_config.value_padding = style.get("value_padding").map(str::parse).transpose()?.unwrap_or(parsed_config.value_padding);
+    }
+
+    parsed_config.rendered_separator = parsed_config.separator.repeat(parsed_config.separator_size);
+
+    Ok(parsed_config)
+}
+
+
+fn args_parser(args: Vec<String>) -> Result<Args> {
+    let mut parsed_args = Args::default();
+    for (i,arg) in args.iter().enumerate() {
+        match arg.as_str() {
+            "--ss" => {
+                let lower_bound = date_str_to_timestamp(args.get(i+1).ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?)?;
+                parsed_args.filter = Some(FilterBounds { lower: lower_bound, upper: i64::MAX });
+            },
+            "--to" => {
+                let upper_bound = date_str_to_timestamp(args.get(i+1).ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?)?;
+                if let Some(current_filter) = parsed_args.filter {
+                    parsed_args.filter = Some(FilterBounds { lower: current_filter.lower, upper: upper_bound });
+                } else {
+                    parsed_args.filter = Some(FilterBounds { lower: 0, upper: upper_bound })
+                }
+
+            },
+            "--t" => {
+                let current_tp = date_str_to_timestamp(&get_current_date())?;
+                let lower_bound = current_tp - (args.get(i+1)
+                    .ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?
+                    .parse::<i64>().with_context(||"Falha ao ler argumento, consultar --help".bright_red())?
+                    *86400 //current date - X in days
+                ); 
+                parsed_args.filter = Some(FilterBounds { lower: lower_bound, upper: i64::MAX })
+            }
+            "--help" => {
+                parsed_args = Args { filter: None, help: true }
+            }
+            _ => {}
+        }
+    }
+    Ok(parsed_args)
+}
+
+fn add_registry(config: &Config) -> Result<()>{
     let value: f64 = CustomType::new("Valor:")
         .with_formatter(&|i: f64| format!("${}", i))
         .with_error_message("Favor adicionar um número valido")
         .with_help_message("Negativo para gastos, use ponto para centavos")
-        .prompt()
-        .unwrap();
+        .prompt()?;
     
     let desc = Text::new("Descrição:")
         .with_help_message("Descrição para o registro")
-        .prompt()
-        .unwrap();
+        .prompt()?;
     
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .append(true)
-        .open(config.history_file_path)
-        .unwrap();
-    
-    file.write(format!("{}:{}:{}\n",get_current_date(),value,desc).as_bytes()).expect("Falha ao escrever arquivo.");
-    println!("{} Registro adicionado.",">".bright_green())
+        .open(&config.history_file_path)?;
+
+    let line = format!("{}:{}:{}\n",get_current_date(),value,desc); 
+    file.write(line.as_bytes()).expect("Falha ao escrever arquivo.");
+    println!("{} Registro adicionado !",">".bright_green());
+    Ok(())
 }
 
-fn read_registry(config: Config,filters: (i64,i64)) {
-    let file = match read(config.history_file_path) {
-        Ok(file) => file,
-        Err(_) => {
-            println!("{}\nVocê deve adicionar pelo menos um registro para criar o aquivo.","Arquivo de log não existente !".bright_red());
-            return;
+//Reads the history file and returns a iterator, wihtout consuming it
+fn read_history_file(path: &PathBuf) -> Result<impl Iterator<Item = Result<Registry>>>{
+    let file = File::open(&path).with_context(||format!("Arquivo de log não existente !\nVocê deve adicionar pelo menos um registro para criar o aquivo.\n> {}",path.to_string_lossy()).bright_red())?;
+
+    let reader = BufReader::new(file);
+
+    Ok(
+        reader.lines().map(|line|{
+            let line = line?;
+            Ok(Registry::from_str(&line).with_context(||"Falha ao parse para registry")?)
         }
-    };
+    ))
+}
 
-    let log = String::from_utf8(file).unwrap();
-
+fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) -> Result<()>{
+    //Isso some os valores e cria a "janela" de print salvando na memoria só os útlimos X valores para printar
     let mut sum = 0.0;
-    let mut registries: Vec<Registry> = log.lines().map(|f|Registry::from_str(f).expect("Falha ao passar linha do log.")).collect();
-    if filters != (0,i64::MAX) {
-        registries = registries.into_iter().filter(|f|{let tp = date_str_to_timestamp(&f.date); tp>filters.0 && tp<filters.1}).collect();
-    }
-    let trim_hide = registries.len().checked_sub(config.trim_size.unwrap_or(50)).unwrap_or(0);
-    if trim_hide > 0 {
-        println!("↑\n| Ocultando {} registros",trim_hide);
-    }
-    for (i,reg) in registries.iter().enumerate() {
-        //trim print size
-        if i >= trim_hide {
-            let print_money = if reg.money > 0.0 {
-                format!("↑${:.2}",reg.money).bright_green()
-            } else {
-                format!("↓${:.2}",reg.money*-1.0).bright_red()
-            };
-                println!("[{}] {}: {}",reg.date,print_money,reg.desc);
+    let mut print_buf: VecDeque<Registry> = VecDeque::with_capacity(config.trim_size);
+
+    //Lê arquivo faz as somas e filtros
+    let mut trim_hide = 0;
+    for reg in read_history_file(&config.history_file_path)? {
+        let reg = reg?;
+        if print_buf.len() == config.trim_size {
+            print_buf.pop_front();
         }
+        if let Some(filter) = filter {
+            let tp = date_str_to_timestamp(&reg.date)?;
+            if tp < filter.lower || tp > filter.upper {
+                continue;
+            }
+        };
 
         sum += reg.money;
+        trim_hide += 1;
+
+        print_buf.push_back(reg);
     }
-    if config.objectives.is_some() {
-        println!("{}","=".repeat(config.sep_size.unwrap_or(50)));
-        for objective in config.objectives.unwrap() {
+
+    //Print valores
+    if trim_hide > config.trim_size {
+        println!("↑\n| Ocultando {} registros",trim_hide-config.trim_size);
+    }
+    for reg in print_buf {
+        let print_money = if reg.money > 0.0 {
+            format!("↑${:.2}",reg.money).bright_green()
+        } else {
+            format!("↓${:.2}",reg.money*-1.0).bright_red()
+        };
+        let padding = config.value_padding;
+        println!("[{}] {:<padding$} {}",reg.date,print_money,reg.desc);
+    };
+
+    //Print objetivos
+    if let Some(objectives) = &config.objectives {
+        println!("{}",&config.rendered_separator);
+
+        for objective in objectives {
             let perc = (sum/objective.1)*100.0;
             let mut perc_str = format!("{:.2}%",perc);
             if perc > 100.0 {
@@ -114,93 +254,39 @@ fn read_registry(config: Config,filters: (i64,i64)) {
             } else {
                 perc_str = perc_str.bright_yellow().to_string();
             }
-            println!("{}: ${} ({})",objective.0,objective.1,perc_str)
+            println!("{}: {} ({})",objective.0,objective.1,perc_str)
         }
     }
-    println!("{}\nTotal: ${}","=".repeat(config.sep_size.unwrap_or(50)),format!("{:.2}",sum).to_string().bright_cyan())
+
+    println!("{}",&config.rendered_separator);
+    println!("Total: ${}",format!("{:.2}",sum).to_string().bright_cyan());
+    Ok(())
 }
 
-fn main() {
-    //oppening config file
-    let config_file = match read(".fexcel.conf") {
-        Ok(file) => file,
-        Err(e) => {
-            if e.kind() != ErrorKind::NotFound {
-                panic!("Erro desconhecido: {}",e);
-            }
-            println!("Sem arquivo de configuração !\nGerando arquivo padrão: .fexcel.conf");
-            let defaut_config = include_bytes!("..\\default.conf");
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .open(".fexcel.conf")
-                .unwrap();
-            file.write(defaut_config).expect("Falha ao escver arquivo !");
-            defaut_config.to_vec()
-        }
-    };
+fn main() -> Result<()>{
+    let config = config_parser(CONFIG_FILE_NAME.into())?;
 
-    let mut config = Config::default();
+    let args = args_parser(env::args().collect::<Vec<String>>())?;
 
-    //reading config file
-    for line in String::from_utf8(config_file).unwrap().lines() {
-        let (conf,param) = line.split_once("=").unwrap();
-        match conf {
-            "HISTORY_FILE" => {config.history_file_path = param.parse().expect("Erro ao parse !")},
-            "OBJECTIVES" => {
-                let mut objectives: Vec<(String,f64)> = Vec::new();
-                for obj in param.split(",") {
-                    if let Some((desc,val)) = obj.split_once(":") {
-                        objectives.push((desc.parse().expect("Erro ao parse !"),val.parse().expect("Valor do objetivo incorreto !")))
-                    }
-                }
-                config.objectives = Some(objectives)
-            },
-            "TRIM" => {
-                config.trim_size = Some(param.parse().expect("Erro ao parse !"))
-            }
-            "SEP_SIZE" => {
-                config.sep_size = Some(param.parse().expect("Erro ao parse !"))
-            }
-            _ => ()
-        }
+    if args.help {
+        println!("{}",include_str!("..\\help.txt"));
+        return Ok(())
     }
 
-    //parse args
-    let mut filters: (i64,i64) = (0,i64::MAX);
-    let args: Vec<String> = env::args().collect();
-    for (i,arg) in args.iter().enumerate() {
-        match arg.as_str() {
-            "--ss" => {
-                filters.0 = date_str_to_timestamp(args.get(i+1).expect("Argumento errado !")); //start
-            },
-            "--to" => {
-                filters.1 = date_str_to_timestamp(args.get(i+1).expect("Argumento errado !")); //end
-            },
-            "--t" => {
-
-                filters.0 = date_str_to_timestamp(&get_current_date()) - (args.get(i+1).expect("Argumento errado !").parse::<i64>().unwrap()*86400); //current date - X in days
-            }
-            "--help" => {
-                println!(include_str!("..\\help.txt"));
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    if filters != (0,i64::MAX) {
-        read_registry(config,filters)
+    if args.filter.is_some() {
+        calculate_and_print_registry(&config,&args.filter)?;
     } else {
         let opts = vec!["Ver registros","Adicionar registro"];
+
         let sel = Select::new("",opts.to_owned())
             .with_help_message("↑↓ para mover")
-            .prompt()
-            .unwrap();
+            .prompt()?;
+
         if sel == opts[0] {
-            read_registry(config,filters)
+            calculate_and_print_registry(&config,&args.filter)?;
         } else if sel == opts[1] {
-            add_registry(config)
+            add_registry(&config)?
         }
     }
+    Ok(())
 }
