@@ -17,6 +17,7 @@ const CONFIG_FILE_NAME: &str = ".fexcel.ini";
 struct Config {
     history_file_path: PathBuf,
     objectives: Option<Vec<(String,f64)>>,
+    expenses: Option<Vec<(String,f64)>>,
     trim_size: usize,
     separator: String,
     separator_size: usize,
@@ -29,11 +30,12 @@ impl Default for Config {
         Self { 
             history_file_path: "history.log".into(),
             objectives: None,
+            expenses: None,
             trim_size: 50,
             separator: "━".to_string(),
             separator_size: 50,
             value_padding: 9,
-            rendered_separator: '='.to_string().repeat(50)
+            rendered_separator: "━".to_string().repeat(50)
         }
     }
 }
@@ -91,7 +93,8 @@ fn date_str_to_timestamp(date:&str) -> Result<i64> {
 fn config_parser(config_file_path: PathBuf) -> Result<Config> {
     //If configo file doesn't exist, write one
     if !config_file_path.try_exists()? {
-        println!("Sem arquivo de configuração !\nGerando arquivo padrão: .fexcel.conf");
+        println!("{}","Sem arquivo de configuração !".bright_yellow());
+        println!("{}","Gerando arquivo padrão: .fexcel.ini".bright_yellow());
         let mut file = File::create(&config_file_path)?; 
         file.write_all(include_bytes!("..\\fexcel_default.ini"))?;
     }
@@ -106,18 +109,36 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
         .ok_or_else(||anyhow!("Falha ao pegar history_file na configuração ! Use: --help !"))?
         .parse()?;
 
+    //Objectives
     if let Some(objectives_sec) = config_file.section(Some("objectives")) {
-        parsed_config.objectives = Some(objectives_sec.iter()
+        let objectives = objectives_sec.iter()
             .map(|(k,v)| -> Result<(String,f64)>{
                 Ok((
                     k.to_owned(),
                     v.parse::<f64>()
-                        .with_context(|| format!("Erro ao fazer parse do valor '{}' para '{}' ! Use: --help", v, k))?
+                        .with_context(|| format!("[Objectives] Erro ao fazer parse do valor '{}' para '{}' ! Use: --help", v, k))?
                 ))
             })
-            .collect::<Result<Vec<(String,f64)>>>()? //Rust magia negra, tranforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
-        );
+            .collect::<Result<Vec<(String,f64)>>>()?; //Rust magia negra, tranforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
+
+        parsed_config.objectives = (!objectives.is_empty()).then_some(objectives)
     }
+
+    //Expenses
+    if let Some(expenses_sec) = config_file.section(Some("expenses")) {
+        let expenses = expenses_sec.iter()
+                .map(|(k,v)| -> Result<(String,f64)>{
+                    Ok((
+                        k.to_owned(),
+                        v.parse::<f64>()
+                            .with_context(|| format!("[Expenses] Erro ao fazer parse do valor '{}' para '{}' ! Use: --help", v, k))?
+                    ))
+                })
+                .collect::<Result<Vec<(String,f64)>>>()?; //Rust magia negra, tranforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
+
+        parsed_config.expenses = (!expenses.is_empty()).then_some(expenses)
+    }
+
     if let Some(style) = config_file.section(Some("style")) {
         parsed_config.trim_size = style.get("trim_size").map(str::parse).transpose()?.unwrap_or(parsed_config.trim_size);
         parsed_config.separator = style.get("separator").map(str::parse).transpose()?.unwrap_or(parsed_config.separator);
@@ -245,16 +266,36 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) 
     //Print objetivos
     if let Some(objectives) = &config.objectives {
         println!("{}",&config.rendered_separator);
-
         for objective in objectives {
             let perc = (sum/objective.1)*100.0;
             let mut perc_str = format!("{:.2}%",perc);
             if perc > 100.0 {
-               perc_str = perc_str.bright_green().blink().to_string();
+               perc_str = perc_str.bright_green().underline().blink().to_string();
             } else {
                 perc_str = perc_str.bright_yellow().to_string();
             }
-            println!("{}: {} ({})",objective.0,objective.1,perc_str)
+            println!("{} {}: ${} ({})","❱".bright_green(),objective.0,objective.1,perc_str)
+        }
+    }
+
+    //Print despesas
+    if let Some(expenses) = &config.expenses {
+        if !config.objectives.is_some() {
+            println!("{}",&config.rendered_separator);
+        }
+        for expense in expenses {
+            let perc = (expense.1/sum)*100.0; //No caso das despesas ela mostra o quantos % da despesa equivale do total E.G: despesa R$100 de Total R$300 = 33.33%
+            let mut perc_str = format!("{:.2}%",perc);
+            if perc < 20.0 {
+               perc_str = perc_str.bright_green().to_string();
+            } else if perc < 50.0 {
+                perc_str = perc_str.bright_yellow().to_string();
+            }else if perc < 80.0 {
+                perc_str = perc_str.truecolor(255, 127, 0).to_string(); //laranja
+            } else {
+                perc_str = perc_str.bright_red().underline().blink().to_string();
+            }
+            println!("{} {}: ${} ({})","❰".bright_red(),expense.0,expense.1,perc_str)
         }
     }
 
