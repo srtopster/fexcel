@@ -18,7 +18,8 @@ struct Config {
     history_file_path: PathBuf,
     objectives: Option<Vec<(String,f64)>>,
     expenses: Option<Vec<(String,f64)>>,
-    trim_size: usize,
+    trim_list_size: usize,
+    trim_desc_size: usize,
     separator: String,
     separator_size: usize,
     value_padding: usize,
@@ -31,7 +32,8 @@ impl Default for Config {
             history_file_path: "history.log".into(),
             objectives: None,
             expenses: None,
-            trim_size: 50,
+            trim_list_size: 50,
+            trim_desc_size: usize::MAX,
             separator: "━".to_string(),
             separator_size: 50,
             value_padding: 9,
@@ -140,7 +142,8 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
     }
 
     if let Some(style) = config_file.section(Some("style")) {
-        parsed_config.trim_size = style.get("trim_size").map(str::parse).transpose()?.unwrap_or(parsed_config.trim_size);
+        parsed_config.trim_list_size = style.get("trim_list_size").map(str::parse).transpose()?.unwrap_or(parsed_config.trim_list_size);
+        parsed_config.trim_desc_size = style.get("trim_desc_size").map(str::parse).transpose()?.unwrap_or(parsed_config.trim_desc_size);
         parsed_config.separator = style.get("separator").map(str::parse).transpose()?.unwrap_or(parsed_config.separator);
         parsed_config.separator_size = style.get("separator_size").map(str::parse).transpose()?.unwrap_or(parsed_config.separator_size);
         parsed_config.value_padding = style.get("value_padding").map(str::parse).transpose()?.unwrap_or(parsed_config.value_padding);
@@ -227,13 +230,13 @@ fn read_history_file(path: &PathBuf) -> Result<impl Iterator<Item = Result<Regis
 fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) -> Result<()>{
     //Isso some os valores e cria a "janela" de print salvando na memoria só os útlimos X valores para printar
     let mut sum = 0.0;
-    let mut print_buf: VecDeque<Registry> = VecDeque::with_capacity(config.trim_size);
+    let mut print_buf: VecDeque<Registry> = VecDeque::with_capacity(config.trim_list_size);
 
     //Lê arquivo faz as somas e filtros
     let mut trim_hide = 0;
     for reg in read_history_file(&config.history_file_path)? {
         let reg = reg?;
-        if print_buf.len() == config.trim_size {
+        if print_buf.len() == config.trim_list_size {
             print_buf.pop_front();
         }
         if let Some(filter) = filter {
@@ -250,17 +253,26 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) 
     }
 
     //Print valores
-    if trim_hide > config.trim_size {
-        println!("↑\n| Ocultando {} registros",trim_hide-config.trim_size);
+    if trim_hide > config.trim_list_size {
+        println!("↑\n| Ocultando {} registros",trim_hide-config.trim_list_size);
     }
+
     for reg in print_buf {
         let print_money = if reg.money > 0.0 {
             format!("↑${:.2}",reg.money).bright_green()
         } else {
             format!("↓${:.2}",reg.money*-1.0).bright_red()
         };
+
+        //adiciona "..." se a descrição for muito longa, definido por trim_desc_size nas configurações
+        let mut desc = reg.desc.chars().take(config.trim_desc_size).collect::<String>();
+        if reg.desc.chars().count() > config.trim_desc_size {
+            desc.push_str("...");
+        }
+
         let padding = config.value_padding;
-        println!("[{}] {:<padding$} {}",reg.date,print_money,reg.desc);
+
+        println!("[{}] {:<padding$} {}",reg.date,print_money,desc);
     };
 
     //Print objetivos
