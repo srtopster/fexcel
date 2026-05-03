@@ -7,7 +7,7 @@ use std::env;
 use std::collections::VecDeque;
 use colored::*;
 use inquire::{CustomType,Text,Select};
-use chrono::{Utc,FixedOffset,NaiveDateTime};
+use chrono::{Local,NaiveDateTime};
 use anyhow::{Result,anyhow,Context};
 use ini::Ini;
 
@@ -85,11 +85,11 @@ impl FromStr for Registry {
 }
 
 fn get_current_date() -> String {
-    Utc::now().with_timezone(&FixedOffset::west_opt(10800).unwrap()).format("%d/%m/%Y").to_string()
+    Local::now().format("%d/%m/%Y").to_string()
 }
 
 fn date_str_to_timestamp(date:&str) -> Result<i64> {
-    Ok(NaiveDateTime::parse_from_str(&format!("{} 00:00:00",date), "%d/%m/%Y %H:%M:%S").with_context(||anyhow!("Erro ao processar data: {}",date))?.timestamp())
+    Ok(NaiveDateTime::parse_from_str(&format!("{} 00:00:00",date), "%d/%m/%Y %H:%M:%S").with_context(||anyhow!("Erro ao processar data: {}",date))?.and_utc().timestamp())
 }
 
 fn config_parser(config_file_path: PathBuf) -> Result<Config> {

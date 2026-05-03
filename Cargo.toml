@@ -8,6 +8,6 @@ edition = "2021"
 [dependencies]
 colored = "2.0.0"
 inquire = "0.5.2"
-chrono = "0.4.23"
 rust-ini = { version = "0.21.3", features = ["inline-comment"] }
 anyhow = "1.0.102"
+chrono = "0.4.44"
