@@ -44,14 +44,18 @@ impl Default for Config {
 
 struct Args {
     filter: Option<FilterBounds>,
-    help: bool
+    help: bool,
+    highlights: bool,
+    in_out: bool
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
             filter: None,
-            help: false
+            help: false,
+            highlights: false,
+            in_out: false
         }
     }
 }
@@ -180,9 +184,15 @@ fn args_parser(args: Vec<String>) -> Result<Args> {
                     *86400 //current date - X in days
                 ); 
                 parsed_args.filter = Some(FilterBounds { lower: lower_bound, upper: i64::MAX })
+            },
+            "--hl" => {
+                parsed_args.highlights = true;
+            }
+            "--io" => {
+                parsed_args.in_out = true;
             }
             "--help" => {
-                parsed_args = Args { filter: None, help: true }
+                parsed_args.help = true;
             }
             _ => {}
         }
@@ -315,6 +325,108 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) 
     println!("Total: ${}",format!("{:.2}",sum).to_string().bright_cyan());
     Ok(())
 }
+fn print_monthly_in_out(config: &Config) -> Result<()> {
+    let mut current_month_in: f64 = 0.0;
+    let mut current_month_out: f64 = 0.0;
+    let mut current_month_filter: Option<String> = None;
+
+    struct MonthData {
+        month: String,
+        money_in: f64,
+        money_out: f64,
+    }
+
+    let mut data_months: Vec<MonthData> = Vec::new();
+
+    for reg in read_history_file(&config.history_file_path)? {
+        let reg = reg?; 
+
+        //Pega o resumo de cada mês, entradas e saídas
+        let month_year = Some(reg.date[3..].to_string()); // 01/02/2003 => 02/2003
+        if month_year != current_month_filter {
+            if let Some(month) = current_month_filter {
+                data_months.push(
+                    MonthData { 
+                        month: month,
+                        money_in: current_month_in, 
+                        money_out: current_month_out
+                    }
+                );
+            }
+            current_month_filter = month_year;
+            current_month_in = 0.0;
+            current_month_out = 0.0;
+        }
+
+        if reg.money > 0.0 {
+            current_month_in += reg.money
+        } else {
+            current_month_out += reg.money
+        }
+    }
+
+    //Adiciona também os dados dá último mês
+    if let Some(month) = current_month_filter {
+        data_months.push(
+            MonthData { 
+                month: month,
+                money_in: current_month_in, 
+                money_out: current_month_out
+            }
+        );
+    }
+
+    println!("{} {} / {} {}",config.separator.repeat(config.separator_size/5),"Entradas".bright_green(),"Saídas".bright_red(),config.separator.repeat(config.separator_size/5));
+    for data in data_months {
+        let padding = config.value_padding;
+        println!("[{}] {:^padding$} {}",
+            data.month,
+            format!("↑${:.2}",data.money_in).to_string().bright_green(),
+            format!("↓${:.2}",data.money_out*-1.0).to_string().bright_red());
+    }
+    Ok(())
+}
+
+fn print_higlights(config: &Config) -> Result<()> {
+    let mut total_sum: f64 = 0.0;
+    let mut highest_ammount: f64 = 0.0;
+
+    struct HLData {
+        date: String,
+        value: f64
+    }
+
+    let mut highlights: Vec<HLData> = Vec::new();
+
+    for reg in read_history_file(&config.history_file_path)? {
+        let reg = reg?; 
+        total_sum += reg.money;
+
+        //Pega os "Highlights", os dias em que eu tive aquela quantidade de dinheiro pela primeira vez
+        if total_sum > highest_ammount {
+            highlights.push(
+                HLData { 
+                    date: reg.date.to_owned(), 
+                    value: total_sum
+                }
+            );
+            highest_ammount = total_sum;
+        }
+
+    }
+
+    println!("{} {} {}",config.separator.repeat(config.separator_size/5),"Highlights".bright_yellow(),config.separator.repeat(config.separator_size/5));
+    let padding = config.value_padding+2;
+    for hl in highlights {
+        println!("[{}]{}{:^padding$}{}",
+            hl.date,
+            " ━━ ★".bright_yellow(),
+            format!("${:.2}",hl.value).to_string().bright_yellow(),
+            "★ ━━".bright_yellow());
+            //format!("━━ ▲ ${:.2} ▲ ━━",hl.value).to_string().bright_green().blink().underline());
+    }
+    Ok(())
+}
 
 fn main() -> Result<()>{
     let config = config_parser(CONFIG_FILE_NAME.into())?;
@@ -324,6 +436,16 @@ fn main() -> Result<()>{
     if args.help {
         println!("{}",include_str!("..\\help.txt"));
         return Ok(())
+    }
+    
+    if args.highlights {
+        let _ = print_higlights(&config);
+        return Ok(());
+    }
+
+    if args.in_out {
+        let _ = print_monthly_in_out(&config);
+        return Ok(());
     }
 
     if args.filter.is_some() {

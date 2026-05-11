@@ -7,12 +7,15 @@ Eu odeio o excel !
 Leia o arquivo de configuração para mais informações sobre configuraçãoes.
 
 * Argumentos
-==================================================================================
+
 '--ss <DD/MM/YYYY>' Início do filtro de data 
 
 '--to <DD/MM/YYYY>' Fim do filtro de data 
 
 '--t <N>' Filtra os últimos N dias
 
+'--hl' Mostra os Highlights, dias de recorde total
+
+'--io' Mostra as entradas e saídas por mês
+
 '--help' Mostra essa mensagem
-==================================================================================
