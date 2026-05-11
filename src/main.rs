@@ -22,7 +22,6 @@ struct Config {
     trim_desc_size: usize,
     separator: String,
     separator_size: usize,
-    value_padding: usize,
     rendered_separator: String,
 }
 
@@ -36,7 +35,6 @@ impl Default for Config {
             trim_desc_size: usize::MAX,
             separator: "━".to_string(),
             separator_size: 50,
-            value_padding: 9,
             rendered_separator: "━".to_string().repeat(50)
         }
     }
@@ -102,7 +100,7 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
         println!("{}","Sem arquivo de configuração !".bright_yellow());
         println!("{}","Gerando arquivo padrão: .fexcel.ini".bright_yellow());
         let mut file = File::create(&config_file_path)?; 
-        file.write_all(include_bytes!("..\\fexcel_default.ini"))?;
+        file.write_all(include_bytes!("../fexcel_default.ini"))?;
     }
 
     let mut parsed_config = Config::default();
@@ -111,7 +109,7 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
     //pega o caminho do arquivo de history
     parsed_config.history_file_path = config_file.section(None::<String>)
         .ok_or_else(||anyhow!("Falha ao pegar history_file na configuração ! Use: --help !"))?
-        .get("history_file")
+        .get("history_file_path")
         .ok_or_else(||anyhow!("Falha ao pegar history_file na configuração ! Use: --help !"))?
         .parse()?;
 
@@ -150,7 +148,6 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
         parsed_config.trim_desc_size = style.get("trim_desc_size").map(str::parse).transpose()?.unwrap_or(parsed_config.trim_desc_size);
         parsed_config.separator = style.get("separator").map(str::parse).transpose()?.unwrap_or(parsed_config.separator);
         parsed_config.separator_size = style.get("separator_size").map(str::parse).transpose()?.unwrap_or(parsed_config.separator_size);
-        parsed_config.value_padding = style.get("value_padding").map(str::parse).transpose()?.unwrap_or(parsed_config.value_padding);
     }
 
     parsed_config.rendered_separator = parsed_config.separator.repeat(parsed_config.separator_size);
@@ -267,6 +264,8 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) 
         println!("↑\n| Ocultando {} registros",trim_hide-config.trim_list_size);
     }
 
+    let padding = print_buf.iter().map(|f|f.money.abs().to_string().len() + 2).max().unwrap_or(0);
+    
     for reg in print_buf {
         let print_money = if reg.money > 0.0 {
             format!("↑${:.2}",reg.money).bright_green()
@@ -279,8 +278,6 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) 
         if reg.desc.chars().count() > config.trim_desc_size {
             desc.push_str("...");
         }
-
-        let padding = config.value_padding;
 
         println!("[{}] {:<padding$} {}",reg.date,print_money,desc);
     };
@@ -376,13 +373,29 @@ fn print_monthly_in_out(config: &Config) -> Result<()> {
         );
     }
 
-    println!("{} {} / {} {}",config.separator.repeat(config.separator_size/5),"Entradas".bright_green(),"Saídas".bright_red(),config.separator.repeat(config.separator_size/5));
+    let padding = data_months.iter().flat_map(|f|[f.money_in,f.money_out]).map(|v|format!("{:.2}",v.abs()).len()+2).max().unwrap_or(0);
+    println!("{}       {}{}{}{}{}",
+        "Mês".bold(),
+        "Entradas".bold(),
+        " ".repeat(padding.checked_sub(5).unwrap_or(0)),
+        "Saídas".bold(),
+        " ".repeat(padding.checked_sub(3).unwrap_or(0)),
+        "Saldo".bold()
+    );
+    println!("{}",config.separator.repeat((padding*3)+15));
     for data in data_months {
-        let padding = config.value_padding;
-        println!("[{}] {:^padding$} {}",
+        let rest = data.money_in+data.money_out;
+        let print_rest = if rest > 0.0 {
+            format!("↑${:.2}",rest).bright_green()
+        } else {
+            format!("↓${:.2}",rest*-1.0).bright_red()
+        };
+        println!("{} │ {:<padding$} │ {:<padding$} │ {:<padding$}",
             data.month,
             format!("↑${:.2}",data.money_in).to_string().bright_green(),
-            format!("↓${:.2}",data.money_out*-1.0).to_string().bright_red());
+            format!("↓${:.2}",data.money_out*-1.0).to_string().bright_red(),
+            print_rest
+        );
     }
     Ok(())
 }
@@ -415,15 +428,15 @@ fn print_higlights(config: &Config) -> Result<()> {
 
     }
 
-    println!("{} {} {}",config.separator.repeat(config.separator_size/5),"Highlights".bright_yellow(),config.separator.repeat(config.separator_size/5));
-    let padding = config.value_padding+2;
+    let padding = highlights.iter().map(|f|format!("{:.2}",f.value).len()).max().unwrap_or(0) + 3;
+    println!("             {}","Highlights".bright_yellow());
+    println!("{}",config.separator.repeat(padding+21));
     for hl in highlights {
         println!("[{}]{}{:^padding$}{}",
             hl.date,
             " ━━ ★".bright_yellow(),
             format!("${:.2}",hl.value).to_string().bright_yellow(),
             "★ ━━".bright_yellow());
-            //format!("━━ ▲ ${:.2} ▲ ━━",hl.value).to_string().bright_green().blink().underline());
     }
     Ok(())
 }
@@ -434,7 +447,7 @@ fn main() -> Result<()>{
     let args = args_parser(env::args().collect::<Vec<String>>())?;
 
     if args.help {
-        println!("{}",include_str!("..\\help.txt"));
+        println!("{}",include_str!("../help.txt"));
         return Ok(())
     }
     
