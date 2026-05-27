@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::env;
 use std::collections::VecDeque;
 use colored::*;
+use regex::Regex;
 use inquire::{CustomType,Text,Select};
 use chrono::{Local,NaiveDateTime};
 use anyhow::{Result,anyhow,Context};
@@ -13,7 +14,6 @@ use ini::Ini;
 
 const CONFIG_FILE_NAME: &str = ".fexcel.ini";
 
-#[derive(Debug)]
 struct Config {
     history_file_path: PathBuf,
     objectives: Option<Vec<(String,f64)>>,
@@ -41,7 +41,7 @@ impl Default for Config {
 }
 
 struct Args {
-    filter: Option<FilterBounds>,
+    filter: Option<Filter>,
     help: bool,
     highlights: bool,
     in_out: bool
@@ -58,10 +58,20 @@ impl Default for Args {
     }
 }
 
-#[derive(Debug)]
-struct FilterBounds {
+struct Filter {
     lower: i64,
-    upper: i64
+    upper: i64,
+    regex: Option<Regex>
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Self { 
+            lower: i64::MIN, 
+            upper: i64::MAX, 
+            regex: None
+        }
+    }
 }
 
 struct Registry {
@@ -158,29 +168,38 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
 
 fn args_parser(args: Vec<String>) -> Result<Args> {
     let mut parsed_args = Args::default();
-    for (i,arg) in args.iter().enumerate() {
+    let mut args_iter = args.iter().skip(1);
+    while let Some(arg) = args_iter.next() {
         match arg.as_str() {
             "--ss" => {
-                let lower_bound = date_str_to_timestamp(args.get(i+1).ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?)?;
-                parsed_args.filter = Some(FilterBounds { lower: lower_bound, upper: i64::MAX });
+                let lower_bound = date_str_to_timestamp(args_iter.next().ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?)?;
+
+                let filter = parsed_args.filter.get_or_insert_default();
+                filter.lower = lower_bound;
             },
             "--to" => {
-                let upper_bound = date_str_to_timestamp(args.get(i+1).ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?)?;
-                if let Some(current_filter) = parsed_args.filter {
-                    parsed_args.filter = Some(FilterBounds { lower: current_filter.lower, upper: upper_bound });
-                } else {
-                    parsed_args.filter = Some(FilterBounds { lower: 0, upper: upper_bound })
-                }
+                let upper_bound = date_str_to_timestamp(args_iter.next().ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?)?;
 
+                let filter = parsed_args.filter.get_or_insert_default();
+                filter.upper = upper_bound;
             },
             "--t" => {
                 let current_tp = date_str_to_timestamp(&get_current_date())?;
-                let lower_bound = current_tp - (args.get(i+1)
+                let lower_bound = current_tp - (args_iter.next()
                     .ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?
                     .parse::<i64>().with_context(||"Falha ao ler argumento, consultar --help".bright_red())?
                     *86400 //current date - X in days
                 ); 
-                parsed_args.filter = Some(FilterBounds { lower: lower_bound, upper: i64::MAX })
+
+                let filter = parsed_args.filter.get_or_insert_default();
+                filter.lower = lower_bound;
+            },
+            "--r" => {
+                let regex_str = args_iter.next().ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?;
+                let regex = Regex::new(regex_str).with_context(||"Falha ao criar Regex !")?;
+
+                let filter = parsed_args.filter.get_or_insert_default();
+                filter.regex = Some(regex);
             },
             "--hl" => {
                 parsed_args.highlights = true;
@@ -234,34 +253,46 @@ fn read_history_file(path: &PathBuf) -> Result<impl Iterator<Item = Result<Regis
     ))
 }
 
-fn calculate_and_print_registry(config: &Config, filter: &Option<FilterBounds>) -> Result<()>{
+fn calculate_and_print_registry(config: &Config, filter: &Option<Filter>) -> Result<()>{
     //Isso some os valores e cria a "janela" de print salvando na memoria só os útlimos X valores para printar
     let mut sum = 0.0;
     let mut print_buf: VecDeque<Registry> = VecDeque::with_capacity(config.trim_list_size);
+
+    //Trim list size override if filtered
+    let trim_list_size = if filter.is_some() {
+        usize::MAX
+    } else {
+        config.trim_list_size
+    };
 
     //Lê arquivo faz as somas e filtros
     let mut trim_hide = 0;
     for reg in read_history_file(&config.history_file_path)? {
         let reg = reg?;
-        if print_buf.len() == config.trim_list_size {
-            print_buf.pop_front();
-        }
         if let Some(filter) = filter {
             let tp = date_str_to_timestamp(&reg.date)?;
             if tp < filter.lower || tp > filter.upper {
                 continue;
-            }
+            };
+            if let Some(regex) = &filter.regex {
+                if !regex.is_match(&reg.desc) {
+                    continue;
+                }
+            };
         };
 
         sum += reg.money;
         trim_hide += 1;
 
+        if print_buf.len() == trim_list_size {
+            print_buf.pop_front();
+        }
         print_buf.push_back(reg);
     }
 
     //Print valores
-    if trim_hide > config.trim_list_size {
-        println!("↑\n| Ocultando {} registros",trim_hide-config.trim_list_size);
+    if trim_hide > trim_list_size {
+        println!("↑\n| Ocultando {} registros",trim_hide-trim_list_size);
     }
 
     let padding = print_buf.iter().map(|f|f.money.abs().to_string().len() + 2).max().unwrap_or(0);

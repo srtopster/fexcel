@@ -11,3 +11,4 @@ inquire = "0.5.2"
 rust-ini = { version = "0.21.3", features = ["inline-comment"] }
 anyhow = "1.0.102"
 chrono = "0.4.44"
+regex = "1.12.3"
