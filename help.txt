@@ -1,10 +1,10 @@
 Fexcel (Fuck Excel)
 
-Eu odeio o excel !
+Eu odeio o Excel !
 
 * Arquivo de configuração
-".fexcel.ini" é o arquivo de configuração e fica na mesma pasta do executavel.
-Leia o arquivo de configuração para mais informações sobre configuraçãoes.
+".fexcel.ini" é o arquivo de configuração e fica na mesma pasta do executável.
+Leia o arquivo de configuração para mais informações sobre configurações.
 
 * Argumentos
 
@@ -13,6 +13,8 @@ Leia o arquivo de configuração para mais informações sobre configuraçãoes.
 '--to <DD/MM/YYYY>' Fim do filtro de data 
 
 '--t <N>' Filtra os últimos N dias
+
+'--r <regex>' Usa Regex para filtrar as descrições (por padrão case insensitive)
 
 '--hl' Mostra os Highlights, dias de recorde total
 

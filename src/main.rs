@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::env;
 use std::collections::VecDeque;
 use colored::*;
-use regex::Regex;
+use regex::{Regex,RegexBuilder};
 use inquire::{CustomType,Text,Select};
 use chrono::{Local,NaiveDateTime};
 use anyhow::{Result,anyhow,Context};
@@ -133,7 +133,7 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
                         .with_context(|| format!("[Objectives] Erro ao fazer parse do valor '{}' para '{}' ! Use: --help", v, k))?
                 ))
             })
-            .collect::<Result<Vec<(String,f64)>>>()?; //Rust magia negra, tranforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
+            .collect::<Result<Vec<(String,f64)>>>()?; //Rust magia negra, transforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
 
         parsed_config.objectives = (!objectives.is_empty()).then_some(objectives)
     }
@@ -148,7 +148,7 @@ fn config_parser(config_file_path: PathBuf) -> Result<Config> {
                             .with_context(|| format!("[Expenses] Erro ao fazer parse do valor '{}' para '{}' ! Use: --help", v, k))?
                     ))
                 })
-                .collect::<Result<Vec<(String,f64)>>>()?; //Rust magia negra, tranforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
+                .collect::<Result<Vec<(String,f64)>>>()?; //Rust magia negra, transforma um iter de Result<(k,v),Error> em um iterator de (k,v) e propaga o erro
 
         parsed_config.expenses = (!expenses.is_empty()).then_some(expenses)
     }
@@ -196,7 +196,10 @@ fn args_parser(args: Vec<String>) -> Result<Args> {
             },
             "--r" => {
                 let regex_str = args_iter.next().ok_or_else(||anyhow!("Falha ao ler argumento, consultar --help".bright_red()))?;
-                let regex = Regex::new(regex_str).with_context(||"Falha ao criar Regex !")?;
+                let regex = RegexBuilder::new(regex_str)
+                    .case_insensitive(true)
+                    .build()
+                    .with_context(||"Falha ao compilar Regex !")?;
 
                 let filter = parsed_args.filter.get_or_insert_default();
                 filter.regex = Some(regex);
@@ -239,7 +242,7 @@ fn add_registry(config: &Config) -> Result<()>{
     Ok(())
 }
 
-//Reads the history file and returns a iterator, wihtout consuming it
+//Reads the history file and returns a iterator, without consuming it
 fn read_history_file(path: &PathBuf) -> Result<impl Iterator<Item = Result<Registry>>>{
     let file = File::open(&path).with_context(||format!("Arquivo de log não existente !\nVocê deve adicionar pelo menos um registro para criar o aquivo.\n> {}",path.to_string_lossy()).bright_red())?;
 
@@ -254,9 +257,9 @@ fn read_history_file(path: &PathBuf) -> Result<impl Iterator<Item = Result<Regis
 }
 
 fn calculate_and_print_registry(config: &Config, filter: &Option<Filter>) -> Result<()>{
-    //Isso some os valores e cria a "janela" de print salvando na memoria só os útlimos X valores para printar
+    //Isso some os valores e cria a "janela" de print salvando na memoria só os úLtimos X valores para printar
     let mut sum = 0.0;
-    let mut print_buf: VecDeque<Registry> = VecDeque::with_capacity(config.trim_list_size);
+    let mut print_buf: VecDeque<Registry> = VecDeque::new();
 
     //Trim list size override if filtered
     let trim_list_size = if filter.is_some() {
@@ -290,13 +293,19 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<Filter>) -> Res
         print_buf.push_back(reg);
     }
 
+    //Caso tenha filtrado tudo fora
+    if print_buf.len() < 1 {
+        println!("{} {}","❱".bright_red(),"Sem dados !");
+        return Ok(());
+    }
+
     //Print valores
     if trim_hide > trim_list_size {
         println!("↑\n| Ocultando {} registros",trim_hide-trim_list_size);
     }
 
-    let padding = print_buf.iter().map(|f|f.money.abs().to_string().len() + 2).max().unwrap_or(0);
-    
+    let padding = print_buf.iter().map(|f|format!("{:.2}",f.money.abs()).len() + 2).max().unwrap_or(0);
+
     for reg in print_buf {
         let print_money = if reg.money > 0.0 {
             format!("↑${:.2}",reg.money).bright_green()
@@ -353,6 +362,7 @@ fn calculate_and_print_registry(config: &Config, filter: &Option<Filter>) -> Res
     println!("Total: ${}",format!("{:.2}",sum).to_string().bright_cyan());
     Ok(())
 }
+
 fn print_monthly_in_out(config: &Config) -> Result<()> {
     let mut current_month_in: f64 = 0.0;
     let mut current_month_out: f64 = 0.0;
@@ -431,9 +441,9 @@ fn print_monthly_in_out(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn print_higlights(config: &Config) -> Result<()> {
+fn print_highlights(config: &Config) -> Result<()> {
     let mut total_sum: f64 = 0.0;
-    let mut highest_ammount: f64 = 0.0;
+    let mut highest_amount: f64 = 0.0;
 
     struct HLData {
         date: String,
@@ -447,14 +457,14 @@ fn print_higlights(config: &Config) -> Result<()> {
         total_sum += reg.money;
 
         //Pega os "Highlights", os dias em que eu tive aquela quantidade de dinheiro pela primeira vez
-        if total_sum > highest_ammount {
+        if total_sum > highest_amount {
             highlights.push(
                 HLData { 
                     date: reg.date.to_owned(), 
                     value: total_sum
                 }
             );
-            highest_ammount = total_sum;
+            highest_amount = total_sum;
         }
 
     }
@@ -483,7 +493,7 @@ fn main() -> Result<()>{
     }
     
     if args.highlights {
-        let _ = print_higlights(&config);
+        let _ = print_highlights(&config);
         return Ok(());
     }
 
